@@ -13,7 +13,25 @@ You can also setup a ``requirements.yml`` file to install multiple collections i
      version: 'version range identifiers (default: ``*``)'
      source: 'The Galaxy URL to pull the collection from (default: ``--api-server`` from cmdline)'
 
-The ``version`` key can take in the same range identifier format documented above.
+For Galaxy collections, ``version`` takes the range identifier format documented above. Git requirements
+instead use a branch, tag or commit, defaulting to ``HEAD``:
+
+.. code-block:: yaml
+
+   collections:
+   - name: my_namespace.my_collection
+     src: git@git.company.com:my_namespace/ansible-my-collection.git
+     scm: git
+     version: '1.2.3'
+   - name: git@github.com:my_org/private_collections.git#/path/to/collection,devel
+   - name: https://github.com/ansible-collections/amazon.aws.git
+     type: git
+     version: '8102847014fd6e7a3233df9ea998ef4677b99248'
+   - git+https://example.org/team/collections.git
+
+With ``src``, an optional ``name`` asserts the collection's metadata identity; it does not rename it.
+``source`` remains a Galaxy server selector, not a repository URL alias, and cannot be combined with Git
+requirements. Ordinary HTTP(S) artifact URLs retain their existing behavior.
 
 Roles can also be specified and placed under the ``roles`` key. The values follow the same format as a requirements
 file used in older Ansible releases.

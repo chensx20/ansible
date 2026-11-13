@@ -1,0 +1,3 @@
+minor_changes:
+  - ansible-galaxy collection - support Git repositories, revisions and repository-relative collection directories in requirements and positional arguments, including offline artifact downloads.
+  - ansible-galaxy role - share SCM archiving with collections and clean temporary checkout directories on success and failure.

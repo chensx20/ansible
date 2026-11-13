@@ -1033,6 +1033,25 @@ def test_collection_install_custom_server(collection_install):
     assert mock_install.call_args[0][2][0].validate_certs is True
 
 
+@pytest.mark.parametrize('repository', [
+    'git@example.org:team/repo.git#/collection,topic',
+    'ssh://git@example.org/team/repo.git#/collection,topic',
+    'git+https://example.org/team/repo.git#/collection,topic',
+    'https://example.org/team/repo.git#/collection,topic',
+])
+def test_collection_install_git_positional(collection_install, repository):
+    from ansible.galaxy.collection_source import GitCollectionSource
+
+    mock_install, mock_warning, output_dir = collection_install
+    GalaxyCLI(args=['ansible-galaxy', 'collection', 'install', repository, '-p', output_dir]).run()
+    name, revision, source = mock_install.call_args[0][0][0]
+    assert name == repository
+    assert revision == 'topic'
+    assert isinstance(source, GitCollectionSource)
+    assert source.path == 'collection'
+    assert source.repository == repository.replace('git+', '').split('#')[0]
+
+
 @pytest.fixture()
 def requirements_file(request, tmp_path_factory):
     content = request.param
@@ -1109,6 +1128,29 @@ def test_parse_requirements(requirements_cli, requirements_file):
     actual = requirements_cli._parse_requirements_file(requirements_file)
 
     assert actual == expected
+
+
+@pytest.mark.parametrize('requirements_file', ['''
+roles:
+- username.role
+collections:
+- git+file:///tmp/repo
+- name: testing.example
+  src: git@example.org:team/repo.git#/collection,topic
+  scm: git
+- name: https://example.org/repo
+  type: git
+  version: '*'
+'''], indirect=True)
+def test_parse_mixed_git_requirements(requirements_cli, requirements_file):
+    from ansible.galaxy.collection_source import GitCollectionSource
+
+    actual = requirements_cli._parse_requirements_file(requirements_file)
+    assert len(actual['roles']) == 1
+    assert len(actual['collections']) == 3
+    assert actual['collections'][0][2] == GitCollectionSource('file:///tmp/repo', 'HEAD', '', None)
+    assert actual['collections'][1][2] == GitCollectionSource('git@example.org:team/repo.git', 'topic', 'collection', 'testing.example')
+    assert actual['collections'][2][2] == GitCollectionSource('https://example.org/repo', '*', '', None)
 
 
 @pytest.mark.parametrize('requirements_file', ['''

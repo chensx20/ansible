@@ -33,6 +33,7 @@ from ansible.galaxy.collection import (
     verify_collections
 )
 from ansible.galaxy.login import GalaxyLogin
+from ansible.galaxy.collection_source import GitCollectionSource, is_git_url, parse_collection_source
 from ansible.galaxy.role import GalaxyRole
 from ansible.galaxy.token import BasicAuthToken, GalaxyToken, KeycloakToken, NoTokenSentinel
 from ansible.module_utils.ansible_release import __version__ as ansible_version
@@ -585,25 +586,16 @@ class GalaxyCLI(CLI):
                 requirements['roles'] += parse_role_req(role_req)
 
             for collection_req in file_requirements.get('collections') or []:
-                if isinstance(collection_req, dict):
-                    req_name = collection_req.get('name', None)
-                    if req_name is None:
-                        raise AnsibleError("Collections requirement entry should contain the key name.")
+                req_name, req_version, req_source = parse_collection_source(collection_req)
+                if req_source and not isinstance(req_source, GitCollectionSource):
+                    # Match configured servers before creating an unauthenticated explicit server.
+                    req_source = next(iter([a for a in self.api_servers if req_source in [a.name, a.api_server]]),
+                                      GalaxyAPI(self.galaxy,
+                                                "explicit_requirement_%s" % req_name,
+                                                req_source,
+                                                validate_certs=not context.CLIARGS['ignore_certs']))
 
-                    req_version = collection_req.get('version', '*')
-                    req_source = collection_req.get('source', None)
-                    if req_source:
-                        # Try and match up the requirement source with our list of Galaxy API servers defined in the
-                        # config, otherwise create a server with that URL without any auth.
-                        req_source = next(iter([a for a in self.api_servers if req_source in [a.name, a.api_server]]),
-                                          GalaxyAPI(self.galaxy,
-                                                    "explicit_requirement_%s" % req_name,
-                                                    req_source,
-                                                    validate_certs=not context.CLIARGS['ignore_certs']))
-
-                    requirements['collections'].append((req_name, req_version, req_source))
-                else:
-                    requirements['collections'].append((collection_req, '*', None))
+                requirements['collections'].append((req_name, req_version, req_source))
 
         return requirements
 
@@ -703,6 +695,9 @@ class GalaxyCLI(CLI):
         else:
             requirements = {'collections': [], 'roles': []}
             for collection_input in collections:
+                if is_git_url(collection_input):
+                    requirements['collections'].append(parse_collection_source(collection_input))
+                    continue
                 requirement = None
                 if os.path.isfile(to_bytes(collection_input, errors='surrogate_or_strict')) or \
                         urlparse(collection_input).scheme.lower() in ['http', 'https']:
