@@ -33,6 +33,8 @@ import ansible.constants as C
 from ansible.errors import AnsibleError
 from ansible.galaxy import get_collections_galaxy_meta_info
 from ansible.galaxy.api import CollectionVersionMetadata, GalaxyError
+from ansible.galaxy.collection_source import GitCollectionSource
+from ansible.galaxy.scm import scm_archive_resource
 from ansible.galaxy.user_agent import user_agent
 from ansible.module_utils import six
 from ansible.module_utils._text import to_bytes, to_native, to_text
@@ -83,6 +85,7 @@ class CollectionRequirement:
         self.name = name
         self.b_path = b_path
         self.api = api
+        self.git_source = None
         self._versions = set(versions)
         self.force = force
         self.skip = skip
@@ -179,6 +182,8 @@ class CollectionRequirement:
         self.versions = new_versions
 
     def download(self, b_path):
+        if self.git_source is not None:
+            return to_text(self.b_path, errors='surrogate_or_strict')
         download_url = self._metadata.download_url
         artifact_hash = self._metadata.artifact_sha256
         headers = {}
@@ -516,6 +521,7 @@ def build_collection(collection_path, output_path, force):
                                "the collection artifact." % to_native(collection_output))
 
     _build_collection_tar(b_collection_path, b_collection_output, collection_manifest, file_manifest)
+    return collection_output
 
 
 def download_collections(collections, output_path, apis, validate_certs, no_deps, allow_pre_release):
@@ -663,6 +669,8 @@ def verify_collections(collections, search_paths, apis, validate_certs, ignore_e
         with _tempdir() as b_temp_path:
             for collection in collections:
                 try:
+                    if isinstance(collection[2], GitCollectionSource):
+                        raise AnsibleError('Collection verify does not support Git requirements; use a Galaxy collection name.')
 
                     local_collection = None
                     b_collection = to_bytes(collection[0], errors='surrogate_or_strict')
@@ -715,8 +723,10 @@ def verify_collections(collections, search_paths, apis, validate_certs, ignore_e
 @contextmanager
 def _tempdir():
     b_temp_path = tempfile.mkdtemp(dir=to_bytes(C.DEFAULT_LOCAL_TMP, errors='surrogate_or_strict'))
-    yield b_temp_path
-    shutil.rmtree(b_temp_path)
+    try:
+        yield b_temp_path
+    finally:
+        shutil.rmtree(b_temp_path)
 
 
 @contextmanager
@@ -819,6 +829,8 @@ def _get_galaxy_yml(b_galaxy_yml_path):
         raise AnsibleError("Failed to parse the galaxy.yml at '%s' with the following error:\n%s"
                            % (to_native(b_galaxy_yml_path), to_native(err)))
 
+    if not isinstance(galaxy_yml, dict):
+        raise AnsibleError("The collection galaxy.yml at '%s' must contain a mapping." % to_native(b_galaxy_yml_path))
     set_keys = set(galaxy_yml.keys())
     missing_keys = mandatory_keys.difference(set_keys)
     if missing_keys:
@@ -859,6 +871,8 @@ def _build_files_manifest(b_collection_path, namespace, name, ignore_patterns):
     # patterns can be extended by the build_ignore key in galaxy.yml
     b_ignore_patterns = [
         b'galaxy.yml',
+        b'MANIFEST.json',
+        b'FILES.json',
         b'.git',
         b'*.pyc',
         b'*.retry',
@@ -1070,8 +1084,113 @@ def _build_dependency_map(collections, existing_collections, b_temp_path, apis, 
     return dependency_map
 
 
+def _git_collection_artifacts(source, b_temp_path):
+    """Unpack a trusted Git archive without permitting repository paths to escape."""
+    with _tempdir() as b_checkout:
+        b_root = os.path.join(b_checkout, b'collection')
+        archive = scm_archive_resource(source.repository, name='collection', version=source.revision)
+        try:
+            with tarfile.open(archive, 'r') as tar:
+                for member in tar.getmembers():
+                    target = os.path.join(b_checkout, to_bytes(member.name))
+                    if not _inside_directory(target, b_root):
+                        raise AnsibleError('Git archive contains a path outside the repository.')
+                    if member.islnk() or member.isdev() or member.isfifo():
+                        raise AnsibleError('Git archive contains an unsupported file type.')
+                    if member.issym():
+                        link = os.path.join(os.path.dirname(target), to_bytes(member.linkname))
+                        if not _inside_directory(link, b_root):
+                            raise AnsibleError('Git archive contains a symlink outside the repository.')
+                    tar.extract(member, to_native(b_checkout))
+        finally:
+            os.unlink(archive)
+        b_selected = os.path.normpath(os.path.join(b_root, to_bytes(source.path)))
+        if not _inside_directory(b_selected, b_root) or not os.path.isdir(b_selected):
+            raise AnsibleError('Git collection directory does not exist or escapes the repository.')
+        if os.path.isfile(os.path.join(b_selected, b'galaxy.yml')):
+            candidates = [b_selected]
+        else:
+            candidates = [os.path.join(b_selected, child) for child in sorted(os.listdir(b_selected))
+                          if os.path.isfile(os.path.join(b_selected, child, b'galaxy.yml'))]
+        if not candidates:
+            raise AnsibleError('Git repository directory contains no collections with a galaxy.yml file.')
+        artifacts = []
+        identities = set()
+        for candidate in candidates:
+            if not _inside_directory(candidate, b_root):
+                raise AnsibleError('Git collection directory escapes the repository.')
+            _validate_git_collection_paths(candidate, b_root, set())
+            metadata = _get_galaxy_yml(os.path.join(candidate, b'galaxy.yml'))
+            for field in get_collections_galaxy_meta_info():
+                key = 'license_ids' if field['key'] == 'license' else field['key']
+                value = metadata[key]
+                if field['type'] == 'str' and value is not None and not isinstance(value, six.string_types):
+                    raise AnsibleError('Git collection metadata %s must be strings.' % key)
+                if field['type'] == 'list' and not all(isinstance(item, six.string_types) for item in value):
+                    raise AnsibleError('Git collection metadata %s must contain strings.' % key)
+                if field.get('required') and not value:
+                    raise AnsibleError('Git collection metadata %s must not be empty.' % key)
+            namespace, name, version = (metadata[key] for key in ('namespace', 'name', 'version'))
+            if not all(isinstance(value, six.string_types) for value in (namespace, name, version)):
+                raise AnsibleError('Git collection namespace, name and version must be strings.')
+            identity = '%s.%s' % (namespace, name)
+            if not AnsibleCollectionRef.is_valid_collection_name(identity):
+                raise AnsibleError("Invalid collection name '%s' in Git collection metadata." % identity)
+            if identity in identities:
+                raise AnsibleError('Conflicting Git collection identities for %s.' % identity)
+            identities.add(identity)
+            try:
+                SemanticVersion(version)
+            except ValueError as err:
+                raise AnsibleError('Git collection metadata version must be semantic: %s' % to_native(err))
+            dependencies = metadata['dependencies']
+            if not isinstance(dependencies, dict):
+                raise AnsibleError('Git collection dependencies must be a mapping.')
+            for dependency, requirement in dependencies.items():
+                if not isinstance(dependency, six.string_types) or not isinstance(requirement, six.string_types):
+                    raise AnsibleError('Git collection dependencies must map collection names to version strings.')
+                if not AnsibleCollectionRef.is_valid_collection_name(dependency):
+                    raise AnsibleError("Invalid collection name '%s' in Git collection dependencies." % dependency)
+            if source.collection and source.collection != '%s.%s' % (namespace, name):
+                raise AnsibleError('Git collection metadata does not match the requested identity %s.' % source.collection)
+            b_output = to_bytes(tempfile.mkdtemp(dir=b_temp_path))
+            artifacts.append(to_bytes(build_collection(to_text(candidate), to_text(b_output), False)))
+        return artifacts
+
+
+def _validate_git_collection_paths(directory, root, ancestors):
+    real_directory = os.path.realpath(directory)
+    if real_directory in ancestors:
+        raise AnsibleError('Git collection contains a directory symlink cycle.')
+    ancestors = ancestors | {real_directory}
+    for name in os.listdir(directory):
+        path = os.path.join(directory, name)
+        if not _inside_directory(path, root):
+            raise AnsibleError('Git collection contains a symlink outside the repository.')
+        if os.path.isdir(path):
+            _validate_git_collection_paths(path, root, ancestors)
+
+
+def _inside_directory(path, directory):
+    path = os.path.realpath(path)
+    directory = os.path.realpath(directory)
+    return path == directory or path.startswith(directory + to_bytes(os.path.sep))
+
+
 def _get_collection_info(dep_map, existing_collections, collection, requirement, source, b_temp_path, apis,
                          validate_certs, force, parent=None, allow_pre_release=False):
+    if isinstance(source, GitCollectionSource):
+        for b_artifact in _git_collection_artifacts(source, b_temp_path):
+            req = CollectionRequirement.from_tar(b_artifact, force, parent=parent)
+            identity = to_text(req)
+            if identity in dep_map:
+                if dep_map[identity].git_source != source:
+                    raise AnsibleError('Conflicting collection sources for %s.' % identity)
+                continue
+            _get_collection_info(dep_map, existing_collections, to_text(b_artifact), req.latest_version, None,
+                                 b_temp_path, apis, validate_certs, force, parent, allow_pre_release)
+            dep_map[identity].git_source = source
+        return
     dep_msg = ""
     if parent:
         dep_msg = " - as dependency of %s" % parent
@@ -1095,6 +1214,8 @@ def _get_collection_info(dep_map, existing_collections, collection, requirement,
         collection_name = to_text(req)
         if collection_name in dep_map:
             collection_info = dep_map[collection_name]
+            if collection_info.git_source is not None:
+                raise AnsibleError('Conflicting collection sources for %s.' % collection_name)
             collection_info.add_requirement(None, req.latest_version)
         else:
             collection_info = req
