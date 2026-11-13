@@ -20,8 +20,10 @@ def is_git_url(value):
     if not isinstance(value, string_types):
         return False
     repository = value.split(',', 1)[0].split('#', 1)[0]
+    # A username-omitted SCP path must be distinct from namespace.collection:version.
+    scp = re.match(r'^(?:(?P<user>[^/@:]+)@)?[^/:]+:(?P<path>[^:]+)$', repository) if '://' not in repository else None
     return (repository.startswith(('git+', 'ssh://', 'git://')) or
-            re.match(r'^[^/@:]+@[^/:]+:', repository) is not None or
+            (scp is not None and (scp.group('user') is not None or '/' in scp.group('path') or scp.group('path').endswith('.git'))) or
             (urlsplit(repository).scheme in ('http', 'https') and urlsplit(repository).path.endswith('.git')))
 
 

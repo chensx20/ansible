@@ -52,19 +52,26 @@ than embedding credentials in requirements files.
 
    ansible-galaxy collection install 'git+https://example.org/collections.git#collections/network,release'
    ansible-galaxy collection install 'git@example.org:team/collections.git#/network,devel'
+   ansible-galaxy collection install 'example.org:team/collections.git#/network,HEAD~1'
 
 The compact syntax is ``[git+]<repository-url>[#<directory>][,<treeish>]``. HTTPS URLs ending in ``.git``,
 SSH URLs and SCP-style SSH addresses are detected automatically; ``git+`` or ``type: git`` can identify
 other repository URLs. Local repositories can use ``git+file:///path/to/repository``. Omitted revisions
 use ``HEAD``, the repository's default branch, not necessarily ``master``. Branches, tags and commit IDs
-are supported. A requirements entry's ``version`` is the Git revision, not the semantic collection version
+are supported, as are relative revisions such as ``HEAD~1``; the selected commit is archived without
+evaluating the revision a second time. A requirements entry's ``version`` is the Git revision, not the semantic collection version
 in ``galaxy.yml``. An explicit revision must agree with a compact revision; literal ``'*'`` is a Git revision.
+
+SCP-style addresses can omit the username when the repository path contains ``/`` or ends in ``.git``.
+Use ``git+`` or ``type: git`` for other username-omitted SCP addresses to distinguish them from
+Galaxy's ``namespace.collection:version`` syntax.
 
 Directories are relative to the repository root, including fragments beginning with ``/``. Traversal and
 symlinks escaping the repository are rejected. A selected directory containing ``galaxy.yml`` installs that
 collection only. Otherwise, its immediate child directories containing ``galaxy.yml`` are installed in sorted
 order. Use a fragment to select a deeper parent or individual collection. Every selected collection must have
 valid ``galaxy.yml`` metadata, including a semantic version, even when a ``MANIFEST.json`` is present.
+Metadata identities and dependency keys must be complete ``namespace.collection`` names without colon suffixes.
 
 Git collections are built into standard collection artifacts and use normal dependency resolution and install
 options. Downloaded requirements use metadata versions and can be installed offline; Git repositories are not

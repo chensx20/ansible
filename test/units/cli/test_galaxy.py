@@ -1035,6 +1035,8 @@ def test_collection_install_custom_server(collection_install):
 
 @pytest.mark.parametrize('repository', [
     'git@example.org:team/repo.git#/collection,topic',
+    'example.org:team/repo.git#/collection,topic',
+    'example.org:repo.git#/collection,topic',
     'ssh://git@example.org/team/repo.git#/collection,topic',
     'git+https://example.org/team/repo.git#/collection,topic',
     'https://example.org/team/repo.git#/collection,topic',
@@ -1050,6 +1052,32 @@ def test_collection_install_git_positional(collection_install, repository):
     assert isinstance(source, GitCollectionSource)
     assert source.path == 'collection'
     assert source.repository == repository.replace('git+', '').split('#')[0]
+
+
+@pytest.mark.parametrize('action', ['install', 'download', 'verify'])
+@pytest.mark.parametrize('revision', [None, '*'])
+@pytest.mark.parametrize('requirements_file', [False, True])
+def test_collection_git_canonical_consumers(collection_install, monkeypatch, tmp_path, action, revision, requirements_file):
+    from ansible.galaxy.collection_source import GitCollectionSource
+
+    consumer = MagicMock()
+    monkeypatch.setattr(ansible.cli.galaxy, action + '_collections', consumer)
+    repository = 'example.org:team/repo.git#/collection'
+    if requirements_file:
+        requirement = {'name': repository}
+        if revision is not None:
+            requirement['version'] = revision
+        path = tmp_path / 'requirements.yml'
+        path.write_text(yaml.safe_dump({'collections': [requirement]}), encoding='utf-8')
+        arguments = ['-r', str(path)]
+    else:
+        arguments = [repository + (',' + revision if revision is not None else '')]
+    GalaxyCLI(args=['ansible-galaxy', 'collection', action] + arguments + ['-p', collection_install[2]]).run()
+    assert consumer.call_count == 1
+    name, version, source = consumer.call_args[0][0][0]
+    assert name == repository + (',' + revision if revision is not None and not requirements_file else '')
+    assert version == (revision if revision is not None else 'HEAD')
+    assert source == GitCollectionSource('example.org:team/repo.git', version, 'collection', None)
 
 
 @pytest.fixture()

@@ -104,6 +104,31 @@ class GitCollections(unittest.TestCase):
         with open(os.path.join(self.install_path, 'ansible_collections', 'testing', 'child', 'README.md')) as stream:
             self.assertEqual(stream.read(), 'child')
 
+    def test_relative_treeishes_install_and_download(self):
+        for content in ['middle', 'latest']:
+            self.write(os.path.join(self.repository, 'README.md'), content)
+            self.commit(content)
+        for revision in ['HEAD~1', 'HEAD^', 'main~1']:
+            self.install(self.url + ',' + revision, 'middle')
+        download = os.path.join(self.work, 'download')
+        self.galaxy('download', self.url + ',HEAD~1', '-p', download)
+        self.galaxy('install', '-r', 'requirements.yml', '-p', self.install_path, '--force', cwd=download)
+        with open(os.path.join(self.install_path, 'ansible_collections', 'testing', 'root', 'README.md')) as stream:
+            self.assertEqual(stream.read(), 'middle')
+
+    def test_invalid_metadata_identities(self):
+        for field, value in [('name', 'root:bad'), ('namespace', 'testing:bad'),
+                             ('dependencies', {'testing.other:bad': '*'})]:
+            self.collection('', 'root', 'initial')
+            path = os.path.join(self.repository, 'galaxy.yml')
+            with open(path) as stream:
+                metadata = yaml.safe_load(stream)
+            metadata[field] = value
+            self.write(path, yaml.safe_dump(metadata))
+            self.commit('invalid identity ' + field)
+            self.assertIn('Invalid collection name', self.galaxy('install', self.url, '-p', self.install_path, success=False))
+            self.assertFalse(os.path.exists(os.path.join(self.install_path, 'ansible_collections', 'testing', 'root:bad')))
+
     def test_siblings_deep_fragments_dependencies_and_offline_download(self):
         os.unlink(os.path.join(self.repository, 'galaxy.yml'))
         self.collection('alpha', 'alpha', 'alpha', {'testing.zeta': '>=1.0.0'})

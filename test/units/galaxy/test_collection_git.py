@@ -87,6 +87,53 @@ def test_root_wins_over_children(repository, tmp_path):
     assert list(resolve(repository, tmp_path)) == ['testing.example']
 
 
+@pytest.mark.parametrize('commits', [2, 3])
+@pytest.mark.parametrize('revision', ['HEAD~1', 'HEAD^', 'main~1'])
+def test_relative_treeish_is_evaluated_once(repository, tmp_path, commits, revision):
+    contents = ['collection content', 'middle content', 'latest content']
+    for content in contents[1:commits]:
+        (repository / 'README.md').write_text(content, encoding='utf-8')
+        git(repository, 'commit', '-am', content)
+    req = resolve(repository, tmp_path, ',' + revision)['testing.example']
+    with tarfile.open(req.b_path) as tar:
+        assert tar.extractfile('README.md').read().decode('utf-8') == contents[commits - 2]
+    assert list((tmp_path / 'local').iterdir()) == []
+
+
+@pytest.mark.parametrize('action', ['install', 'download'])
+@pytest.mark.parametrize('revision', [None, '*'])
+def test_canonical_git_consumers(repository, tmp_path, action, revision):
+    entries = [requirement(repository, **({} if revision is None else {'version': revision}))]
+    destination = tmp_path / 'destination'
+    destination.mkdir()
+
+    def consume():
+        if action == 'install':
+            collection.install_collections(entries, str(destination), [], True, False, True, False, False)
+        else:
+            collection.download_collections(entries, str(destination), [], True, True, False)
+
+    if revision == '*':
+        with pytest.raises(AnsibleError, match='checkout'):
+            consume()
+        assert list(destination.iterdir()) == []
+    else:
+        consume()
+        if action == 'install':
+            assert (destination / 'testing' / 'example' / 'README.md').read_text(encoding='utf-8') == 'collection content'
+        else:
+            requirements = yaml.safe_load((destination / 'requirements.yml').read_text(encoding='utf-8'))
+            assert requirements == {'collections': [{'name': 'testing-example-1.2.3.tar.gz', 'version': '1.2.3'}]}
+            with tarfile.open(str(destination / 'testing-example-1.2.3.tar.gz')) as tar:
+                assert tar.extractfile('README.md').read() == b'collection content'
+    assert list((tmp_path / 'local').iterdir()) == []
+
+
+def test_verify_rejects_canonical_git_source(repository):
+    with pytest.raises(AnsibleError, match='does not support Git'):
+        collection.verify_collections([requirement(repository)], [], [], True, False)
+
+
 @pytest.mark.parametrize('fragment,identities', [
     ('', ['testing.alpha', 'testing.zeta']),
     ('#/zeta', ['testing.zeta']),
@@ -107,11 +154,15 @@ def test_discover_collections(repository, tmp_path, fragment, identities):
     ({'namespace': 'testing'}, 'mandatory keys'),
     ({'version': 'branch'}, 'must be semantic'),
     ({'namespace': 'invalid-name'}, 'Invalid collection name'),
+    ({'namespace': 'testing:bad'}, 'Invalid collection name'),
+    ({'name': 'example:bad'}, 'Invalid collection name'),
     ({'version': 1.2}, 'must be strings'),
     ({'readme': None}, 'must not be empty'),
     ({'authors': [123]}, 'must contain strings'),
     ({'dependencies': []}, 'must be a mapping'),
     ({'dependencies': {'invalid-name': '*'}}, 'Invalid collection name'),
+    ({'dependencies': {'testing.other:bad': '*'}}, 'Invalid collection name'),
+    ({'dependencies': {'testing.other:>=1.0.0': '*'}}, 'Invalid collection name'),
     ({'dependencies': {'testing.other': 1}}, 'version strings'),
 ])
 def test_invalid_selected_metadata(repository, tmp_path, metadata, error):

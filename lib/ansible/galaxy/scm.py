@@ -58,7 +58,7 @@ def scm_archive_resource(src, scm='git', name=None, version='HEAD', keep_scm_met
                 command.extend(['-r', version])
             run(command + [archive], checkout)
         else:
-            run([executable, 'archive', '--prefix=%s/' % name, '--output=%s' % archive, version or 'HEAD'], checkout)
+            run([executable, 'archive', '--prefix=%s/' % name, '--output=%s' % archive, 'HEAD'], checkout)
         result = archive
         archive = None
         return result

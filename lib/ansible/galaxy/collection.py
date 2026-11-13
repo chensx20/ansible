@@ -33,7 +33,7 @@ import ansible.constants as C
 from ansible.errors import AnsibleError
 from ansible.galaxy import get_collections_galaxy_meta_info
 from ansible.galaxy.api import CollectionVersionMetadata, GalaxyError
-from ansible.galaxy.collection_source import GitCollectionSource, is_git_url, parse_collection_source
+from ansible.galaxy.collection_source import GitCollectionSource
 from ansible.galaxy.scm import scm_archive_resource
 from ansible.galaxy.user_agent import user_agent
 from ansible.module_utils import six
@@ -669,7 +669,7 @@ def verify_collections(collections, search_paths, apis, validate_certs, ignore_e
         with _tempdir() as b_temp_path:
             for collection in collections:
                 try:
-                    if isinstance(collection[2], GitCollectionSource) or is_git_url(collection[0]):
+                    if isinstance(collection[2], GitCollectionSource):
                         raise AnsibleError('Collection verify does not support Git requirements; use a Galaxy collection name.')
 
                     local_collection = None
@@ -1133,8 +1133,9 @@ def _git_collection_artifacts(source, b_temp_path):
             namespace, name, version = (metadata[key] for key in ('namespace', 'name', 'version'))
             if not all(isinstance(value, six.string_types) for value in (namespace, name, version)):
                 raise AnsibleError('Git collection namespace, name and version must be strings.')
-            validate_collection_name('%s.%s' % (namespace, name))
             identity = '%s.%s' % (namespace, name)
+            if not AnsibleCollectionRef.is_valid_collection_name(identity):
+                raise AnsibleError("Invalid collection name '%s' in Git collection metadata." % identity)
             if identity in identities:
                 raise AnsibleError('Conflicting Git collection identities for %s.' % identity)
             identities.add(identity)
@@ -1148,7 +1149,8 @@ def _git_collection_artifacts(source, b_temp_path):
             for dependency, requirement in dependencies.items():
                 if not isinstance(dependency, six.string_types) or not isinstance(requirement, six.string_types):
                     raise AnsibleError('Git collection dependencies must map collection names to version strings.')
-                validate_collection_name(dependency)
+                if not AnsibleCollectionRef.is_valid_collection_name(dependency):
+                    raise AnsibleError("Invalid collection name '%s' in Git collection dependencies." % dependency)
             if source.collection and source.collection != '%s.%s' % (namespace, name):
                 raise AnsibleError('Git collection metadata does not match the requested identity %s.' % source.collection)
             b_output = to_bytes(tempfile.mkdtemp(dir=b_temp_path))
@@ -1177,8 +1179,6 @@ def _inside_directory(path, directory):
 
 def _get_collection_info(dep_map, existing_collections, collection, requirement, source, b_temp_path, apis,
                          validate_certs, force, parent=None, allow_pre_release=False):
-    if is_git_url(collection) and not isinstance(source, GitCollectionSource):
-        collection, requirement, source = parse_collection_source({'name': collection, 'version': requirement})
     if isinstance(source, GitCollectionSource):
         for b_artifact in _git_collection_artifacts(source, b_temp_path):
             req = CollectionRequirement.from_tar(b_artifact, force, parent=parent)

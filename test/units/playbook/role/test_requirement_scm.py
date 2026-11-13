@@ -5,6 +5,7 @@ from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
 import os
+import subprocess
 import tarfile
 
 import pytest
@@ -42,12 +43,43 @@ def test_archive_commands_and_cleanup(tmp_path, monkeypatch, repository, engine,
         with tarfile.open(archive) as tar:
             assert tar.getnames() == ['role']
     elif engine == 'git':
-        assert commands[-1] == ['/usr/bin/git', 'archive', '--prefix=role/', '--output=' + archive, version or 'HEAD']
+        assert commands[-1] == ['/usr/bin/git', 'archive', '--prefix=role/', '--output=' + archive, 'HEAD']
         if version:
             assert commands[1] == ['/usr/bin/git', 'checkout', version, '--']
     else:
         assert commands[-1] == ['/usr/bin/hg', 'archive', '--prefix', 'role/', '-r', version, archive]
     os.unlink(archive)
+
+
+@pytest.mark.parametrize('keep_scm_meta', [False, True])
+def test_relative_treeish_archive_content(tmp_path, monkeypatch, keep_scm_meta):
+    monkeypatch.setattr(C, 'DEFAULT_LOCAL_TMP', str(tmp_path))
+    repository = tmp_path / 'repository'
+    repository.mkdir()
+
+    def git(*arguments):
+        return subprocess.check_output(['git', '-C', str(repository)] + list(arguments)).strip()
+
+    git('init')
+    git('symbolic-ref', 'HEAD', 'refs/heads/main')
+    git('config', 'user.email', 'tester@example.org')
+    git('config', 'user.name', 'Tester')
+    for content in ['0', '1', '2']:
+        (repository / 'README.md').write_text(content, encoding='utf-8')
+        git('add', '.')
+        git('commit', '-m', content)
+    expected_commit = git('rev-parse', 'HEAD~1')
+    archive = RoleRequirement.scm_archive_role(str(repository), name='role', version='HEAD~1', keep_scm_meta=keep_scm_meta)
+    try:
+        with tarfile.open(archive) as tar:
+            assert tar.extractfile('role/README.md').read() == b'1'
+            if keep_scm_meta:
+                assert tar.extractfile('role/.git/HEAD').read().strip() == expected_commit
+            else:
+                assert not any(name.startswith('role/.git/') for name in tar.getnames())
+    finally:
+        os.unlink(archive)
+    assert list(tmp_path.iterdir()) == [repository]
 
 
 @pytest.mark.parametrize('failed_command', ['clone', 'checkout', 'archive'])

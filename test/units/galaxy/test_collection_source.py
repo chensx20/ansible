@@ -14,12 +14,15 @@ from ansible.galaxy.collection_source import GitCollectionSource, is_git_url, pa
     'git+file:///tmp/repo', 'git+https://example.org/repo', 'ssh://git@example.org/repo',
     'git@example.org:group/repo.git#/nested,branch', 'https://example.org/repo.git',
     'http://example.org/repo.git#collection,tag',
+    'example.org:team/repo.git#/nested,branch', 'example.org:repo.git',
+    'example.org:team/repo', 'git@example.org:repo',
 ])
 def test_detect_git(url):
     assert is_git_url(url)
 
 
-@pytest.mark.parametrize('url', ['ns.collection', 'https://example.org/artifact.tar.gz', '/tmp/artifact.tar.gz'])
+@pytest.mark.parametrize('url', ['ns.collection', 'ns.collection:1.2.3', 'ns.collection:>=1.0.0,<2.0.0',
+                                 'https://example.org/artifact.tar.gz', 'http://example.org/artifact.tar.gz', '/tmp/artifact.tar.gz'])
 def test_preserve_non_git(url):
     assert not is_git_url(url)
     assert parse_collection_source(url) == (url, '*', None)
@@ -28,6 +31,8 @@ def test_preserve_non_git(url):
 @pytest.mark.parametrize('entry,expected', [
     ('git+file:///tmp/repo', GitCollectionSource('file:///tmp/repo', 'HEAD', '', None)),
     ('git@example.org:repo#/nested,topic', GitCollectionSource('git@example.org:repo', 'topic', 'nested', None)),
+    ('example.org:team/repo.git#/nested,topic', GitCollectionSource('example.org:team/repo.git', 'topic', 'nested', None)),
+    ({'name': 'example.org:repo.git'}, GitCollectionSource('example.org:repo.git', 'HEAD', '', None)),
     ({'name': 'https://example.org/repo.git', 'version': '*'},
      GitCollectionSource('https://example.org/repo.git', '*', '', None)),
     ({'name': 'ns.collection', 'src': 'https://example.org/repo', 'scm': 'git', 'version': 'tag'},
