@@ -1,0 +1,56 @@
+- name: Install multipart test server
+  copy:
+    src: server.py
+    dest: '{{ remote_tmp_dir }}/server.py'
+
+- name: Start multipart test server
+  command: '{{ ansible_python.executable }} {{ remote_tmp_dir }}/server.py 15261'
+  async: 120
+  poll: 0
+
+- wait_for:
+    port: 15261
+
+- name: Copy remote upload
+  copy:
+    content: remote upload
+    dest: '{{ remote_tmp_dir }}/upload.unknown-extension'
+
+- name: Send controller file and inline fields
+  uri:
+    url: http://127.0.0.1:15261/
+    method: POST
+    body_format: form-multipart
+    headers:
+      content-type: deliberately overridden
+    body:
+      upload:
+        filename: server.py
+      text: hello
+      inline:
+        filename: 'quoted"name.txt'
+        content: inline upload
+  register: local_upload
+
+- name: Send remote file
+  uri:
+    url: http://127.0.0.1:15261/
+    method: POST
+    body_format: form-multipart
+    remote_src: yes
+    body:
+      upload:
+        filename: '{{ remote_tmp_dir }}/upload.unknown-extension'
+  register: remote_upload
+
+- name: Verify multipart payloads and metadata
+  assert:
+    that:
+      - local_upload.json.upload.filename == 'server.py'
+      - local_upload.json.upload.sha256 == lookup('file', 'server.py', rstrip=False) | hash('sha256')
+      - local_upload.json.text.sha256 == 'hello' | hash('sha256')
+      - local_upload.json.inline.filename == 'quoted"name.txt'
+      - local_upload.json.inline.sha256 == 'inline upload' | hash('sha256')
+      - remote_upload.json.upload.filename == 'upload.unknown-extension'
+      - remote_upload.json.upload.mime_type == 'application/octet-stream'
+      - remote_upload.json.upload.sha256 == 'remote upload' | hash('sha256')
