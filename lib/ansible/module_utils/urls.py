@@ -36,6 +36,8 @@ import atexit
 import base64
 import functools
 import netrc
+import mimetypes
+import uuid
 import os
 import platform
 import re
@@ -45,6 +47,7 @@ import tempfile
 import traceback
 
 from contextlib import contextmanager
+from email.message import Message
 
 try:
     import httplib
@@ -56,7 +59,8 @@ import ansible.module_utils.six.moves.http_cookiejar as cookiejar
 import ansible.module_utils.six.moves.urllib.request as urllib_request
 import ansible.module_utils.six.moves.urllib.error as urllib_error
 
-from ansible.module_utils.six import PY3
+from ansible.module_utils.common._collections_compat import Mapping
+from ansible.module_utils.six import PY3, binary_type, string_types
 
 from ansible.module_utils.basic import get_distribution
 from ansible.module_utils._text import to_bytes, to_native, to_text
@@ -1386,6 +1390,62 @@ def open_url(url, data=None, headers=None, method=None, use_proxy=True,
 #
 # Module-related functions
 #
+
+
+def prepare_multipart(fields):
+    """Return a Content-Type and byte body for structured multipart fields.
+
+    Strings are text fields. Mappings accept content, filename, src and
+    mime_type. Without content, src (or filename) is read as a binary file.
+    """
+    if not isinstance(fields, Mapping):
+        raise TypeError('multipart body must be a mapping')
+    boundary = uuid.uuid4().hex
+    parts = []
+    for name, field in fields.items():
+        if not isinstance(name, string_types) or '\r' in name or '\n' in name:
+            raise ValueError('multipart field names must be strings without newlines')
+        if isinstance(field, string_types):
+            field = {'content': field}
+        if not isinstance(field, Mapping):
+            raise TypeError('multipart field %s must be a string or mapping' % name)
+        filename = field.get('filename')
+        src = field.get('src')
+        mime_type = field.get('mime_type')
+        for label, value in (('filename', filename), ('src', src), ('mime_type', mime_type)):
+            if value is not None and (not isinstance(value, string_types) or '\r' in value or '\n' in value):
+                raise ValueError('multipart %s must be a string without newlines' % label)
+        if src is not None and 'content' in field:
+            raise ValueError('multipart src and content are mutually exclusive')
+        if 'content' in field:
+            content = field['content']
+            if not isinstance(content, string_types + (binary_type,)):
+                raise TypeError('multipart content must be a string')
+            content = to_bytes(content)
+        else:
+            path = src or filename
+            if not path:
+                raise ValueError('multipart field requires content or a file path')
+            with open(to_bytes(path, errors='surrogate_or_strict'), 'rb') as source:
+                content = source.read()
+        filename = os.path.basename(filename or src) if filename or src else None
+        if mime_type is None:
+            mime_type = (mimetypes.guess_type(filename)[0] or 'application/octet-stream') if filename else 'text/plain'
+        if not re.match(r'^[\w!#$&^_.+-]+/[\w!#$&^_.+-]+$', mime_type):
+            raise ValueError('invalid multipart MIME type: %s' % mime_type)
+        disposition = Message()
+        disposition.add_header('Content-Disposition', 'form-data')
+        parameters = [('name', to_text(name))]
+        if filename is not None:
+            parameters.append(('filename', to_text(filename)))
+        for parameter, value in parameters:
+            if any(ord(char) > 127 for char in value):
+                value = ('utf-8', '', value if PY3 else to_bytes(value))
+            disposition.set_param(parameter, value, header='Content-Disposition')
+        parts.extend([to_bytes('--' + boundary), to_bytes('Content-Type: ' + mime_type),
+                      to_bytes('Content-Disposition: ' + disposition['Content-Disposition']), b'', content])
+    parts.extend([to_bytes('--' + boundary + '--'), b''])
+    return 'multipart/form-data; boundary=' + boundary, b'\r\n'.join(parts)
 
 
 def basic_auth_header(username, password):

@@ -55,8 +55,14 @@ options:
         body argument, if needed, and automatically sets the Content-Type header accordingly.
         As of C(2.3) it is possible to override the `Content-Type` header, when
         set to C(json) or C(form-urlencoded) via the I(headers) option.
+      - C(form-multipart) converts a dictionary into multipart/form-data (added in v2.10).
+        Each value is a text string or a dictionary with C(content), C(filename), C(src),
+        and C(mime_type). Without C(content), C(src) or C(filename) is read as a file.
+        C(filename) also sets the uploaded basename. C(src) and C(content) are mutually exclusive.
+        File MIME types are guessed from the filename, defaulting to C(application/octet-stream).
+        Text fields default to C(text/plain). The generated Content-Type cannot be overridden.
     type: str
-    choices: [ form-urlencoded, json, raw ]
+    choices: [ form-urlencoded, form-multipart, json, raw ]
     default: raw
     version_added: "2.0"
   method:
@@ -148,6 +154,7 @@ options:
     description:
       - If C(no), the module will search for src on originating/master machine.
       - If C(yes) the module will use the C(src) path on the remote/target machine.
+      - Also applies to file paths in C(form-multipart) bodies.
     type: bool
     default: no
     version_added: '2.7'
@@ -271,6 +278,17 @@ EXAMPLES = r'''
   retries: 720 # 720 * 5 seconds = 1hour (60*60/5)
   delay: 5 # Every 5 seconds
 
+- name: Upload a file with text fields
+  uri:
+    url: https://example.org/upload
+    method: POST
+    body_format: form-multipart
+    body:
+      description: Release artifact
+      artifact:
+        filename: /path/on/controller/release.tar.gz
+        mime_type: application/gzip
+
 # There are issues in a supporting Python library that is discussed in
 # https://github.com/ansible/ansible/issues/52705 where a proxy is defined
 # but you want to bypass proxy use on CIDR masks by using no_proxy
@@ -371,7 +389,7 @@ from ansible.module_utils.six import PY2, iteritems, string_types
 from ansible.module_utils.six.moves.urllib.parse import urlencode, urlsplit
 from ansible.module_utils._text import to_native, to_text
 from ansible.module_utils.common._collections_compat import Mapping, Sequence
-from ansible.module_utils.urls import fetch_url, url_argument_spec
+from ansible.module_utils.urls import fetch_url, prepare_multipart, url_argument_spec
 
 JSON_CANDIDATES = ('text', 'json', 'javascript')
 
@@ -573,7 +591,7 @@ def main():
         url_username=dict(type='str', aliases=['user']),
         url_password=dict(type='str', aliases=['password'], no_log=True),
         body=dict(type='raw'),
-        body_format=dict(type='str', default='raw', choices=['form-urlencoded', 'json', 'raw']),
+        body_format=dict(type='str', default='raw', choices=['form-urlencoded', 'form-multipart', 'json', 'raw']),
         src=dict(type='path'),
         method=dict(type='str', default='GET'),
         return_content=dict(type='bool', default=False),
@@ -626,6 +644,14 @@ def main():
                 module.fail_json(msg='failed to parse body as form_urlencoded: %s' % to_native(e), elapsed=0)
         if 'content-type' not in [header.lower() for header in dict_headers]:
             dict_headers['Content-Type'] = 'application/x-www-form-urlencoded'
+
+    elif body_format == 'form-multipart':
+        try:
+            content_type, body = prepare_multipart(body)
+        except (TypeError, ValueError, OSError, IOError) as e:
+            module.fail_json(msg='failed to prepare multipart body: %s' % to_native(e), elapsed=0)
+        dict_headers = dict((key, value) for key, value in dict_headers.items() if key.lower() != 'content-type')
+        dict_headers['Content-Type'] = content_type
 
     if creates is not None:
         # do not run the command if the line contains creates=filename

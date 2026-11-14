@@ -7,6 +7,8 @@ from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
 import json
+import cgi
+import hashlib
 import os
 import re
 import pytest
@@ -289,9 +291,19 @@ def test_publish_collection(api_version, collection_url, collection_artifact, mo
     assert mock_call.call_count == 1
     assert mock_call.mock_calls[0][1][0] == 'https://galaxy.ansible.com/api/%s/%s/' % (api_version, collection_url)
     assert mock_call.mock_calls[0][2]['headers']['Content-length'] == len(mock_call.mock_calls[0][2]['args'])
-    assert mock_call.mock_calls[0][2]['headers']['Content-type'].startswith(
-        'multipart/form-data; boundary=--------------------------')
-    assert mock_call.mock_calls[0][2]['args'].startswith(b'--------------------------')
+    content_type = mock_call.mock_calls[0][2]['headers']['Content-type']
+    assert content_type.startswith('multipart/form-data; boundary=')
+    boundary = content_type.split('boundary=')[1]
+    assert mock_call.mock_calls[0][2]['args'].startswith(('--' + boundary + '\r\n').encode('ascii'))
+    form = cgi.FieldStorage(fp=BytesIO(mock_call.mock_calls[0][2]['args']), environ={
+        'REQUEST_METHOD': 'POST', 'CONTENT_TYPE': content_type,
+        'CONTENT_LENGTH': str(mock_call.mock_calls[0][2]['headers']['Content-length']),
+    })
+    with open(collection_artifact, 'rb') as artifact:
+        expected_content = artifact.read()
+    assert form['file'].file.read() == expected_content
+    assert form['file'].filename == os.path.basename(collection_artifact)
+    assert form['sha256'].value == hashlib.sha256(expected_content).hexdigest()
     assert mock_call.mock_calls[0][2]['method'] == 'POST'
     assert mock_call.mock_calls[0][2]['auth_required'] is True
 
